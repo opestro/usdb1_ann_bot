@@ -4,6 +4,7 @@ const Announcement = require('../models/announcement');
 const { isAdmin, addAdmin } = require('../middleware/adminAuth');
 const { validateAnnouncement } = require('../utils/validator');
 const schedule = require('node-schedule');
+const { getText } = require('../utils/language');
 
 console.log('🤖 Initializing Telegram bot...');
 
@@ -21,45 +22,47 @@ const announcementStates = new Map();
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   try {
-    // Save or update user in database
-    await User.findOneAndUpdate(
-      { telegramId: chatId.toString() },
-      { username: msg.from.username },
-      { upsert: true }
-    );
-    
-    // Send welcome message with emoji
-    bot.sendMessage(chatId, 
-      '🎓 Welcome to University Announcement Bot!\n\n' +
-      'You will receive updates automatically for all announcements.\n' +
-      'Categories include: #sports, #academic, #tech, #events, #general, #important\n\n' +
-      '📌 Available commands:\n' +
-      '/myid - Get your Telegram ID\n' +
-      '/getannouncements - Get last 5 announcements\n' +
-      '/announce - Create announcement (admin only)\n' +
-      '/addadmin - Add new admin (admin only)'
+    // Show language selection first
+    await bot.sendMessage(
+      chatId, 
+      '🌐 Welcome! Please select your language\n\n' +
+      'Bienvenue! Veuillez choisir votre langue\n\n' +
+      'مرحباً! الرجاء اختيار لغتك',
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: 'English 🇬🇧', callback_data: 'start_lang_en' },
+              { text: 'Français 🇫🇷', callback_data: 'start_lang_fr' },
+              { text: 'العربية 🇸🇦', callback_data: 'start_lang_ar' }
+            ]
+          ]
+        }
+      }
     );
   } catch (error) {
-    console.error('Error saving user:', error);
+    console.error('Error in start command:', error);
   }
 });
 
 // Admin command to create announcement
 bot.onText(/\/announce/, async (msg) => {
   const chatId = msg.chat.id;
+  const user = await User.findOne({ telegramId: chatId.toString() });
+  const lang = user?.language || 'en';
   
   if (!await isAdmin(msg)) {
-    bot.sendMessage(chatId, '⛔ You are not authorized to create announcements.');
+    bot.sendMessage(chatId, getText(lang, 'not_authorized'));
     return;
   }
 
-  // Initialize announcement state
   announcementStates.set(chatId, { 
     step: 'TITLE',
-    attachments: []
+    attachments: [],
+    language: lang
   });
   
-  bot.sendMessage(chatId, '📝 Please enter the announcement title:');
+  bot.sendMessage(chatId, getText(lang, 'announcement_title_prompt'));
 });
 
 // Admin command to add another admin
@@ -76,26 +79,34 @@ bot.on('message', async (msg) => {
 
   if (!state) return;
 
+  const lang = state.language;
+
   try {
     switch (state.step) {
       case 'TITLE':
         state.title = msg.text;
         state.step = 'MESSAGE';
-        bot.sendMessage(chatId, '📝 Please enter the announcement message:');
+        bot.sendMessage(chatId, getText(lang, 'announcement_message_prompt'));
         break;
 
       case 'MESSAGE':
         state.message = msg.text;
         state.step = 'TAG';
-        bot.sendMessage(chatId, '🏷️ Please select a tag:', {
+        bot.sendMessage(chatId, getText(lang, 'announcement_tag_prompt'), {
           reply_markup: {
             inline_keyboard: [
-              [{ text: 'Sports ⚽', callback_data: 'tag_sports' }, 
-               { text: 'Academic 📚', callback_data: 'tag_academic' }],
-              [{ text: 'Tech 💻', callback_data: 'tag_tech' }, 
-               { text: 'Events 📅', callback_data: 'tag_events' }],
-              [{ text: 'General 📢', callback_data: 'tag_general' }, 
-               { text: 'Important ⚠️', callback_data: 'tag_important' }]
+              [
+                { text: `${getText(lang, 'sports')} ⚽`, callback_data: 'tag_sports' },
+                { text: `${getText(lang, 'academic')} 📚`, callback_data: 'tag_academic' }
+              ],
+              [
+                { text: `${getText(lang, 'tech')} 💻`, callback_data: 'tag_tech' },
+                { text: `${getText(lang, 'events')} 📅`, callback_data: 'tag_events' }
+              ],
+              [
+                { text: `${getText(lang, 'general')} 📢`, callback_data: 'tag_general' },
+                { text: `${getText(lang, 'important')} ⚠️`, callback_data: 'tag_important' }
+              ]
             ]
           }
         });
@@ -103,7 +114,7 @@ bot.on('message', async (msg) => {
     }
   } catch (error) {
     console.error('Error in message handler:', error);
-    bot.sendMessage(chatId, '❌ Error creating announcement. Please try again.');
+    bot.sendMessage(chatId, getText(lang, 'error_creating_announcement'));
     announcementStates.delete(chatId);
   }
 });
@@ -111,12 +122,51 @@ bot.on('message', async (msg) => {
 // Handle tag selection and schedule option
 bot.on('callback_query', async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+
+  if (data.startsWith('start_lang_')) {
+    const language = data.split('_')[2];
+    try {
+      // Save user with selected language
+      await User.findOneAndUpdate(
+        { telegramId: chatId.toString() },
+        { 
+          username: callbackQuery.from.username,
+          language: language 
+        },
+        { upsert: true }
+      );
+
+      // Send welcome message in selected language
+      await bot.sendMessage(chatId, getText(language, 'language_changed'));
+      await bot.sendMessage(chatId, getText(language, 'welcome'));
+      await bot.sendMessage(chatId, getText(language, 'commands'));
+
+    } catch (error) {
+      console.error('Error setting initial language:', error);
+      bot.sendMessage(chatId, '❌ Error setting language. Please try /start again.');
+    }
+    return;
+  }
+
+  if (data.startsWith('lang_')) {
+    const language = data.split('_')[1];
+    await User.findOneAndUpdate(
+      { telegramId: chatId.toString() },
+      { language: language },
+      { upsert: true }
+    );
+
+    bot.sendMessage(chatId, getText(language, 'language_changed'));
+    return;
+  }
+  
   const state = announcementStates.get(chatId);
 
   if (!state) return;
 
-  if (callbackQuery.data.startsWith('tag_')) {
-    state.tag = callbackQuery.data.replace('tag_', '');
+  if (data.startsWith('tag_')) {
+    state.tag = data.replace('tag_', '');
     state.step = 'ATTACHMENTS';
     
     bot.sendMessage(chatId, 
@@ -130,7 +180,7 @@ bot.on('callback_query', async (callbackQuery) => {
         }
       }
     );
-  } else if (callbackQuery.data === 'attachments_done') {
+  } else if (data === 'attachments_done') {
     await createAndSendAnnouncement(state, chatId);
     announcementStates.delete(chatId);
   }
@@ -199,65 +249,59 @@ async function createAndSendAnnouncement(state, chatId) {
 async function broadcastAnnouncement(announcement) {
   try {
     const users = await User.find();
-    console.log('📢 Broadcasting announcement to', users.length, 'users');
     
     for (const user of users) {
+      const lang = user.language || 'en';
       try {
-        // Format date
-        const date = new Date().toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-
-        // Send main message with markdown formatting
         const message = 
-          `${getTagEmoji(announcement.tag)} *NEW ANNOUNCEMENT*\n\n` +
-          `*📌 Title:* \`${announcement.title}\`\n\n` +
+          `${getTagEmoji(announcement.tag)} *${getText(lang, 'new_announcement')}*\n\n` +
+          `*${getText(lang, 'title')}:* \`${announcement.title}\`\n\n` +
           `${announcement.message}\n\n` +
-          `*🏷️ Category:* _#${announcement.tag}_\n` +
-          `*🕒 Posted:* _${date}_`;
+          `*${getText(lang, 'category')}:* _#${announcement.tag}_\n` +
+          `*${getText(lang, 'posted')}:* _${new Date().toLocaleString(
+            lang === 'ar' ? 'ar-SA' : lang === 'fr' ? 'fr-FR' : 'en-US',
+            {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            }
+          )}_`;
 
         await bot.sendMessage(user.telegramId, message, {
           parse_mode: 'Markdown',
           disable_web_page_preview: true
         });
 
-        // Send attachments if any
-        if (announcement.attachments && announcement.attachments.length > 0) {
-          console.log('📎 Sending', announcement.attachments.length, 
-            'attachments to user:', user.telegramId);
-          
+        // Handle attachments
+        if (announcement.attachments?.length > 0) {
           for (const attachment of announcement.attachments) {
-            console.log('📎 Sending attachment:', {
-              type: attachment.type,
-              fileId: attachment.fileId
-            });
+            const caption = getText(lang, 'attachment_for')
+              .replace('{title}', announcement.title);
 
             switch (attachment.type) {
               case 'photo':
                 await bot.sendPhoto(user.telegramId, attachment.fileId, {
-                  caption: `📸 Attachment for: *${announcement.title}*`,
+                  caption,
                   parse_mode: 'Markdown'
-                }).catch(err => console.error('Error sending photo:', err));
+                });
                 break;
               case 'document':
                 await bot.sendDocument(user.telegramId, attachment.fileId, {
-                  caption: `📎 Document for: *${announcement.title}*`,
+                  caption,
                   parse_mode: 'Markdown'
-                }).catch(err => console.error('Error sending document:', err));
+                });
                 break;
             }
           }
         }
       } catch (error) {
-        console.error('❌ Error sending to user:', user.telegramId, error);
+        console.error(`Error sending to user ${user.telegramId}:`, error);
       }
     }
   } catch (error) {
-    console.error('❌ Error in broadcast:', error);
+    console.error('Error in broadcast:', error);
   }
 }
 
@@ -275,34 +319,17 @@ function getTagEmoji(tag) {
 }
 
 // Add debug logging for /myid command
-bot.onText(/\/myid/, (msg) => {
-  console.log('📝 /myid command received:', {
-    chatId: msg.chat.id,
-    userId: msg.from.id,
-    username: msg.from.username,
-    firstName: msg.from.first_name,
-    lastName: msg.from.last_name,
-    messageType: msg.chat.type
-  });
-
+bot.onText(/\/myid/, async (msg) => {
   const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const username = msg.from.username ? `@${msg.from.username}` : 'No username';
+  const user = await User.findOne({ telegramId: chatId.toString() });
+  const lang = user?.language || 'en';
   
-  try {
-    bot.sendMessage(chatId, 
-      `🆔 Your Information:\n\n` +
-      `Telegram ID: ${userId}\n` +
-      `Username: ${username}\n\n` +
-      `Share this ID with an admin to get admin privileges.`
-    ).then(() => {
-      console.log('✅ /myid response sent successfully to:', chatId);
-    }).catch((error) => {
-      console.error('❌ Error sending /myid response:', error);
-    });
-  } catch (error) {
-    console.error('❌ Error processing /myid command:', error);
-  }
+  const userId = msg.from.id;
+  const username = msg.from.username ? `@${msg.from.username}` : getText(lang, 'no_username');
+  
+  bot.sendMessage(chatId, getText(lang, 'your_id_info')
+    .replace('{id}', userId)
+    .replace('{username}', username));
 });
 
 // Add general message logging
@@ -325,25 +352,23 @@ bot.on('error', (error) => {
 
 // Add command to get recent announcements
 bot.onText(/\/getannouncements/, async (msg) => {
-  console.log('📝 /getannouncements command received from:', msg.chat.id);
   const chatId = msg.chat.id;
+  const user = await User.findOne({ telegramId: chatId.toString() });
+  const lang = user?.language || 'en';
 
   try {
-    // Get last 5 announcements, sorted by creation date
     const recentAnnouncements = await Announcement.find()
       .sort({ createdAt: -1 })
       .limit(5);
 
     if (recentAnnouncements.length === 0) {
-      bot.sendMessage(chatId, '📭 No announcements found.');
+      bot.sendMessage(chatId, getText(lang, 'no_announcements'));
       return;
     }
 
-    // Format and send each announcement
-    let response = '📢 Recent Announcements:\n\n';
+    let response = `${getText(lang, 'recent_announcements')}\n\n`;
     
     for (const announcement of recentAnnouncements) {
-      // Get emoji based on tag
       const tagEmoji = {
         sports: '⚽',
         academic: '📚',
@@ -353,27 +378,28 @@ bot.onText(/\/getannouncements/, async (msg) => {
         important: '⚠️'
       }[announcement.tag] || '📌';
 
-      // Format date
-      const date = new Date(announcement.createdAt).toLocaleDateString();
-      response += `${tagEmoji} ${announcement.title}\n`;
-      response += `Message: ${announcement.message}\n\n`;
-      response += `Category: #${announcement.tag}\n`;
-      response += `Date: ${date}\n`;
+      const date = new Date(announcement.createdAt).toLocaleString(
+        lang === 'ar' ? 'ar-SA' : lang === 'fr' ? 'fr-FR' : 'en-US',
+        {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }
+      );
+
+      response += `${tagEmoji} *${announcement.title}*\n`;
+      response += `${getText(lang, 'message')}: ${announcement.message}\n\n`;
+      response += `${getText(lang, 'category')}: _#${announcement.tag}_\n`;
+      response += `${getText(lang, 'date')}: _${date}_\n`;
       response += `-------------------------\n\n`;
     }
 
-    bot.sendMessage(chatId, response)
-      .then(() => {
-        console.log('✅ Recent announcements sent to:', chatId);
-      })
-      .catch((error) => {
-        console.error('❌ Error sending announcements:', error);
-      });
-
+    bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
   } catch (error) {
-    console.error('❌ Error fetching announcements:', error);
-    bot.sendMessage(chatId, 
-      '❌ Sorry, there was an error fetching announcements. Please try again later.');
+    console.error('Error fetching announcements:', error);
+    bot.sendMessage(chatId, getText(lang, 'error_fetching_announcements'));
   }
 });
 
@@ -435,6 +461,23 @@ bot.on('document', async (msg) => {
       }
     );
   }
+});
+
+// Add language command handler
+bot.onText(/\/lang/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  bot.sendMessage(chatId, '🌐 Select your language / Choisir la langue / اختر اللغة', {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: 'English 🇬🇧', callback_data: 'lang_en' },
+          { text: 'Français 🇫🇷', callback_data: 'lang_fr' },
+          { text: 'العربية 🇸🇦', callback_data: 'lang_ar' }
+        ]
+      ]
+    }
+  });
 });
 
 module.exports = { bot, broadcastAnnouncement }; 
