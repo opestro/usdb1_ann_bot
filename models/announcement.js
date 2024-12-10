@@ -22,6 +22,18 @@ const announcementSchema = new mongoose.Schema({
     enum: ALLOWED_TAGS, // Only allow predefined tags
     lowercase: true // Convert to lowercase before saving
   },
+  // Add attachment fields
+  attachments: [{
+    type: {
+      type: String,
+      enum: ['photo', 'document', 'video'],
+      required: true
+    },
+    fileId: {
+      type: String,
+      required: true
+    }
+  }],
   // Reference to admin who created the announcement
   createdBy: { 
     type: String, 

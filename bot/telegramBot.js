@@ -14,7 +14,7 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
 
 console.log('✅ Bot initialized, waiting for messages...');
 
-// Store ongoing announcement creation states
+// Store announcement creation states
 const announcementStates = new Map();
 
 // Command handlers
@@ -53,7 +53,12 @@ bot.onText(/\/announce/, async (msg) => {
     return;
   }
 
-  announcementStates.set(chatId, { step: 'TITLE' });
+  // Initialize announcement state
+  announcementStates.set(chatId, { 
+    step: 'TITLE',
+    attachments: []
+  });
+  
   bot.sendMessage(chatId, '📝 Please enter the announcement title:');
 });
 
@@ -97,6 +102,7 @@ bot.on('message', async (msg) => {
         break;
     }
   } catch (error) {
+    console.error('Error in message handler:', error);
     bot.sendMessage(chatId, '❌ Error creating announcement. Please try again.');
     announcementStates.delete(chatId);
   }
@@ -111,28 +117,22 @@ bot.on('callback_query', async (callbackQuery) => {
 
   if (callbackQuery.data.startsWith('tag_')) {
     state.tag = callbackQuery.data.replace('tag_', '');
+    state.step = 'ATTACHMENTS';
     
-    // Ask if they want to schedule the announcement
-    bot.sendMessage(chatId, '⏰ Would you like to schedule this announcement?', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: 'Yes', callback_data: 'schedule_yes' }, 
-           { text: 'No, send now', callback_data: 'schedule_no' }]
-        ]
+    bot.sendMessage(chatId, 
+      '📎 You can now send photos or documents (optional).\n' +
+      'Send your attachments one by one or click "Done" if you don\'t want to add any.',
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "Done ✅", callback_data: "attachments_done" }
+          ]]
+        }
       }
-    });
-  } else if (callbackQuery.data.startsWith('schedule_')) {
-    if (callbackQuery.data === 'schedule_yes') {
-      state.step = 'SCHEDULE';
-      bot.sendMessage(chatId, 
-        '📅 Please enter the schedule date and time in format:\n' +
-        'YYYY-MM-DD HH:mm\n' +
-        'Example: 2024-04-01 14:30');
-    } else {
-      // Create and send announcement immediately
-      await createAndSendAnnouncement(state, chatId);
-      announcementStates.delete(chatId);
-    }
+    );
+  } else if (callbackQuery.data === 'attachments_done') {
+    await createAndSendAnnouncement(state, chatId);
+    announcementStates.delete(chatId);
   }
 });
 
@@ -193,33 +193,48 @@ async function createAndSendAnnouncement(state, chatId) {
 // Function to broadcast announcement to all registered users
 async function broadcastAnnouncement(announcement) {
   try {
-    // Get all registered users
     const users = await User.find();
     
-    // Format message with emoji based on tag
-    const tagEmoji = {
-      sports: '⚽',
-      academic: '📚',
-      tech: '💻',
-      events: '📅',
-      general: '📢',
-      important: '⚠️'
-    };
-
-    // Construct formatted message
-    const message = 
-      `${tagEmoji[announcement.tag] || '📢'} New Announcement\n\n` +
-      `Title: ${announcement.title}\n\n` +
-      `${announcement.message}\n\n` +
-      `Category: #${announcement.tag}`;
-
-    // Send to each user
     for (const user of users) {
+      // Send main announcement message
+      const message = 
+        `${getTagEmoji(announcement.tag)} New Announcement\n\n` +
+        `Title: ${announcement.title}\n` +
+        `Category: #${announcement.tag}\n\n` +
+        `${announcement.message}`;
+
       await bot.sendMessage(user.telegramId, message);
+
+      // Send attachments if any
+      if (announcement.attachments && announcement.attachments.length > 0) {
+        for (const attachment of announcement.attachments) {
+          switch (attachment.type) {
+            case 'photo':
+              await bot.sendPhoto(user.telegramId, attachment.fileId);
+              break;
+            case 'document':
+              await bot.sendDocument(user.telegramId, attachment.fileId);
+              break;
+          }
+        }
+      }
     }
   } catch (error) {
     console.error('Error broadcasting announcement:', error);
   }
+}
+
+// Helper function to get emoji for tag
+function getTagEmoji(tag) {
+  const emojis = {
+    sports: '⚽',
+    academic: '📚',
+    tech: '💻',
+    events: '📅',
+    general: '📢',
+    important: '⚠️'
+  };
+  return emojis[tag] || '📌';
 }
 
 // Add debug logging for /myid command
@@ -323,6 +338,54 @@ bot.onText(/\/getannouncements/, async (msg) => {
     console.error('❌ Error fetching announcements:', error);
     bot.sendMessage(chatId, 
       '❌ Sorry, there was an error fetching announcements. Please try again later.');
+  }
+});
+
+// Handle file uploads during announcement creation
+bot.on('photo', async (msg) => {
+  const chatId = msg.chat.id;
+  const state = announcementStates.get(chatId);
+  
+  if (state && state.step === 'ATTACHMENTS') {
+    const photoId = msg.photo[msg.photo.length - 1].file_id; // Get highest resolution
+    state.attachments.push({
+      type: 'photo',
+      fileId: photoId
+    });
+    
+    bot.sendMessage(chatId, 
+      '📎 Photo attached! Send another attachment or click "Done" when finished.',
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "Done ✅", callback_data: "attachments_done" }
+          ]]
+        }
+      }
+    );
+  }
+});
+
+bot.on('document', async (msg) => {
+  const chatId = msg.chat.id;
+  const state = announcementStates.get(chatId);
+  
+  if (state && state.step === 'ATTACHMENTS') {
+    state.attachments.push({
+      type: 'document',
+      fileId: msg.document.file_id
+    });
+    
+    bot.sendMessage(chatId, 
+      '📎 Document attached! Send another attachment or click "Done" when finished.',
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "Done ✅", callback_data: "attachments_done" }
+          ]]
+        }
+      }
+    );
   }
 });
 
