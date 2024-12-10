@@ -167,26 +167,31 @@ bot.on('message', async (msg) => {
 // Helper function to create and send announcement
 async function createAndSendAnnouncement(state, chatId) {
   try {
-    // Validate announcement data
-    const validationError = validateAnnouncement(state);
-    if (validationError) {
-      throw new Error(validationError);
-    }
+    console.log('📤 Creating announcement with state:', {
+      title: state.title,
+      hasAttachments: !!state.attachments,
+      attachmentsCount: state.attachments?.length
+    });
 
-    // Create announcement
+    // Create the announcement in database
     const announcement = new Announcement({
       title: state.title,
       message: state.message,
       tag: state.tag,
+      attachments: state.attachments || [],
       createdBy: chatId.toString()
     });
 
     await announcement.save();
+    console.log('💾 Announcement saved to database with ID:', announcement._id);
+
+    // Broadcast the announcement
     await broadcastAnnouncement(announcement);
     
     bot.sendMessage(chatId, '✅ Announcement created and sent successfully!');
   } catch (error) {
-    bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+    console.error('❌ Error creating announcement:', error);
+    bot.sendMessage(chatId, '❌ Error creating announcement. Please try again.');
   }
 }
 
@@ -194,33 +199,65 @@ async function createAndSendAnnouncement(state, chatId) {
 async function broadcastAnnouncement(announcement) {
   try {
     const users = await User.find();
+    console.log('📢 Broadcasting announcement to', users.length, 'users');
     
     for (const user of users) {
-      // Send main announcement message
-      const message = 
-        `${getTagEmoji(announcement.tag)} New Announcement\n\n` +
-        `Title: ${announcement.title}\n` +
-        `Category: #${announcement.tag}\n\n` +
-        `${announcement.message}`;
+      try {
+        // Format date
+        const date = new Date().toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
 
-      await bot.sendMessage(user.telegramId, message);
+        // Send main message with markdown formatting
+        const message = 
+          `${getTagEmoji(announcement.tag)} *NEW ANNOUNCEMENT*\n\n` +
+          `*📌 Title:* \`${announcement.title}\`\n\n` +
+          `${announcement.message}\n\n` +
+          `*🏷️ Category:* _#${announcement.tag}_\n` +
+          `*🕒 Posted:* _${date}_`;
 
-      // Send attachments if any
-      if (announcement.attachments && announcement.attachments.length > 0) {
-        for (const attachment of announcement.attachments) {
-          switch (attachment.type) {
-            case 'photo':
-              await bot.sendPhoto(user.telegramId, attachment.fileId);
-              break;
-            case 'document':
-              await bot.sendDocument(user.telegramId, attachment.fileId);
-              break;
+        await bot.sendMessage(user.telegramId, message, {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true
+        });
+
+        // Send attachments if any
+        if (announcement.attachments && announcement.attachments.length > 0) {
+          console.log('📎 Sending', announcement.attachments.length, 
+            'attachments to user:', user.telegramId);
+          
+          for (const attachment of announcement.attachments) {
+            console.log('📎 Sending attachment:', {
+              type: attachment.type,
+              fileId: attachment.fileId
+            });
+
+            switch (attachment.type) {
+              case 'photo':
+                await bot.sendPhoto(user.telegramId, attachment.fileId, {
+                  caption: `📸 Attachment for: *${announcement.title}*`,
+                  parse_mode: 'Markdown'
+                }).catch(err => console.error('Error sending photo:', err));
+                break;
+              case 'document':
+                await bot.sendDocument(user.telegramId, attachment.fileId, {
+                  caption: `📎 Document for: *${announcement.title}*`,
+                  parse_mode: 'Markdown'
+                }).catch(err => console.error('Error sending document:', err));
+                break;
+            }
           }
         }
+      } catch (error) {
+        console.error('❌ Error sending to user:', user.telegramId, error);
       }
     }
   } catch (error) {
-    console.error('Error broadcasting announcement:', error);
+    console.error('❌ Error in broadcast:', error);
   }
 }
 
@@ -318,11 +355,10 @@ bot.onText(/\/getannouncements/, async (msg) => {
 
       // Format date
       const date = new Date(announcement.createdAt).toLocaleDateString();
-      
       response += `${tagEmoji} ${announcement.title}\n`;
+      response += `Message: ${announcement.message}\n\n`;
       response += `Category: #${announcement.tag}\n`;
       response += `Date: ${date}\n`;
-      response += `Message: ${announcement.message}\n\n`;
       response += `-------------------------\n\n`;
     }
 
@@ -346,15 +382,27 @@ bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
   const state = announcementStates.get(chatId);
   
+  console.log('📸 Received photo:', {
+    chatId: chatId,
+    state: state?.step,
+    photoSizes: msg.photo,
+    hasCaption: !!msg.caption
+  });
+  
   if (state && state.step === 'ATTACHMENTS') {
-    const photoId = msg.photo[msg.photo.length - 1].file_id; // Get highest resolution
+    // Get the highest resolution photo
+    const photo = msg.photo[msg.photo.length - 1];
+    console.log('📸 Saving photo with fileId:', photo.file_id);
+    
+    state.attachments = state.attachments || [];
     state.attachments.push({
       type: 'photo',
-      fileId: photoId
+      fileId: photo.file_id
     });
     
     bot.sendMessage(chatId, 
-      '📎 Photo attached! Send another attachment or click "Done" when finished.',
+      `📎 Photo attached! (ID: ${photo.file_id.substr(0, 8)}...)\n` +
+      'Send another attachment or click "Done" when finished.',
       {
         reply_markup: {
           inline_keyboard: [[

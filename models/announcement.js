@@ -50,4 +50,14 @@ const announcementSchema = new mongoose.Schema({
 // Add index for faster sorting and querying
 announcementSchema.index({ createdAt: -1 });
 
+// Add this logging to the pre-save middleware
+announcementSchema.pre('save', function(next) {
+  console.log('💾 Saving announcement:', {
+    title: this.title,
+    hasAttachments: this.attachments?.length > 0,
+    attachments: this.attachments
+  });
+  next();
+});
+
 module.exports = mongoose.model('Announcement', announcementSchema); 
