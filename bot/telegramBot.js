@@ -480,4 +480,190 @@ bot.onText(/\/lang/, async (msg) => {
   });
 });
 
+// Dashboard command handler
+bot.onText(/\/dashboard/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await User.findOne({ telegramId: chatId.toString() });
+  const lang = user?.language || 'en';
+
+  if (!await isAdmin(msg)) {
+    bot.sendMessage(chatId, getText(lang, 'not_authorized'));
+    return;
+  }
+
+  try {
+    // Gather statistics
+    const totalUsers = await User.countDocuments();
+    const activeUsers = await User.countDocuments({ lastActive: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } });
+    const totalAdmins = await User.countDocuments({ role: 'admin' });
+    const totalAnnouncements = await Announcement.countDocuments();
+
+    // Create dashboard menu
+    const dashboardMessage = 
+      `📊 *Admin Dashboard*\n\n` +
+      `👥 Total Users: ${totalUsers}\n` +
+      `✅ Active Users (7d): ${activeUsers}\n` +
+      `👑 Total Admins: ${totalAdmins}\n` +
+      `📢 Total Announcements: ${totalAnnouncements}\n\n` +
+      `Select an option:`;
+
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: '👥 Manage Admins', callback_data: 'dash_admins' },
+          { text: '📢 Manage Announcements', callback_data: 'dash_announcements' }
+        ],
+        [
+          { text: '📊 User Statistics', callback_data: 'dash_stats' },
+          { text: '🔔 Active Subscriptions', callback_data: 'dash_subs' }
+        ]
+      ]
+    };
+
+    bot.sendMessage(chatId, dashboardMessage, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard
+    });
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    bot.sendMessage(chatId, getText(lang, 'error_dashboard'));
+  }
+});
+
+// Handle dashboard callbacks
+bot.on('callback_query', async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+  
+  if (!data.startsWith('dash_')) return;
+
+  try {
+    switch (data) {
+      case 'dash_admins':
+        await handleAdminManagement(chatId);
+        break;
+      case 'dash_announcements':
+        await handleAnnouncementManagement(chatId);
+        break;
+      case 'dash_stats':
+        await handleUserStatistics(chatId);
+        break;
+      case 'dash_subs':
+        await handleActiveSubscriptions(chatId);
+        break;
+    }
+  } catch (error) {
+    console.error('Dashboard action error:', error);
+  }
+});
+
+// Admin Management Handler
+async function handleAdminManagement(chatId) {
+  const admins = await User.find({ role: 'admin' });
+  let message = '👑 *Admin Management*\n\n';
+  
+  for (const admin of admins) {
+    message += `• ${admin.username || admin.telegramId} ` +
+      `[Remove](${makeRemoveAdminUrl(admin.telegramId)})\n`;
+  }
+
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: '➕ Add New Admin', callback_data: 'admin_add' }],
+      [{ text: '🔙 Back to Dashboard', callback_data: 'dash_back' }]
+    ]
+  };
+
+  bot.sendMessage(chatId, message, {
+    parse_mode: 'Markdown',
+    reply_markup: keyboard
+  });
+}
+
+// Announcement Management Handler
+async function handleAnnouncementManagement(chatId) {
+  const recentAnnouncements = await Announcement.find()
+    .sort({ createdAt: -1 })
+    .limit(5);
+
+  let message = '📢 *Recent Announcements*\n\n';
+  let keyboard = { inline_keyboard: [] };
+
+  for (const announcement of recentAnnouncements) {
+    message += `• ${announcement.title}\n`;
+    keyboard.inline_keyboard.push([
+      { 
+        text: `🗑️ Delete "${announcement.title.substring(0, 20)}..."`,
+        callback_data: `del_ann_${announcement._id}`
+      }
+    ]);
+  }
+
+  keyboard.inline_keyboard.push([
+    { text: '🔙 Back to Dashboard', callback_data: 'dash_back' }
+  ]);
+
+  bot.sendMessage(chatId, message, {
+    parse_mode: 'Markdown',
+    reply_markup: keyboard
+  });
+}
+
+// User Statistics Handler
+async function handleUserStatistics(chatId) {
+  const stats = await User.aggregate([
+    {
+      $group: {
+        _id: '$language',
+        count: { $sum: 1 }
+      }
+    }
+  ]);
+
+  const activeToday = await User.countDocuments({
+    lastActive: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+  });
+
+  let message = '📊 *User Statistics*\n\n' +
+    `Active Today: ${activeToday}\n\n` +
+    '*Language Distribution:*\n';
+
+  for (const stat of stats) {
+    message += `${stat._id}: ${stat.count} users\n`;
+  }
+
+  bot.sendMessage(chatId, message, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '🔙 Back to Dashboard', callback_data: 'dash_back' }
+      ]]
+    }
+  });
+}
+
+// Active Subscriptions Handler
+async function handleActiveSubscriptions(chatId) {
+  const activeUsers = await User.find({
+    lastActive: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+  }).sort({ lastActive: -1 });
+
+  let message = '🔔 *Active Subscriptions (Last 7 Days)*\n\n';
+  
+  for (const user of activeUsers) {
+    const lastActive = new Date(user.lastActive).toLocaleString();
+    message += `• ${user.username || user.telegramId}\n` +
+      `  Last active: ${lastActive}\n`;
+  }
+
+  bot.sendMessage(chatId, message, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '🔙 Back to Dashboard', callback_data: 'dash_back' }
+      ]]
+    }
+  });
+}
+
 module.exports = { bot, broadcastAnnouncement }; 

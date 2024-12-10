@@ -27,5 +27,12 @@
   "tech": "Tech",
   "events": "Events",
   "general": "General",
-  "important": "Important"
+  "important": "Important",
+  "error_dashboard": "❌ Error accessing dashboard. Please try again.",
+  "admin_management": "👑 Admin Management",
+  "add_admin": "➕ Add New Admin",
+  "remove_admin": "🗑️ Remove Admin",
+  "back_to_dashboard": "🔙 Back to Dashboard",
+  "user_statistics": "📊 User Statistics",
+  "active_subscriptions": "🔔 Active Subscriptions"
 } 
