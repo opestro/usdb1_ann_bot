@@ -34,5 +34,8 @@
   "remove_admin": "🗑️ Remove Admin",
   "back_to_dashboard": "🔙 Back to Dashboard",
   "user_statistics": "📊 User Statistics",
-  "active_subscriptions": "🔔 Active Subscriptions"
+  "active_subscriptions": "🔔 Active Subscriptions",
+  "admin_commands": "📌 *Admin Commands:*\n• /myid - Get your Telegram ID\n• /getannouncements - Get last 5 announcements\n• /announce - Create new announcement\n• /addadmin - Add new admin\n• /dashboard - Access admin dashboard\n• /lang - Change language",
+  "student_commands": "📌 Available Commands:\n• /myid - Get your Telegram ID\n• /getannouncements - Get last 5 announcements\n• /lang - Change language",
+  "open_dashboard": "🎛️ Open Dashboard"
 } 

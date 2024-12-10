@@ -1,61 +1,92 @@
 const User = require('../models/user');
 
-// List of admin Telegram IDs with a default empty array if env variable is not set
-const ADMIN_TELEGRAM_IDS = process.env.ADMIN_TELEGRAM_IDS ? 
-  process.env.ADMIN_TELEGRAM_IDS.split(',') : [];
+// Get initial admin IDs from environment variable
+const initialAdmins = process.env.ADMIN_TELEGRAM_IDS 
+  ? process.env.ADMIN_TELEGRAM_IDS.split(',').map(id => id.trim())
+  : [];
 
-// Middleware to check if user is admin
-const isAdmin = async (msg) => {
-  const telegramId = msg.from.id.toString();
+// Initialize admin users on startup
+const initializeAdmins = async () => {
   try {
-    // If no admins exist yet, make the first user an admin
-    if (ADMIN_TELEGRAM_IDS.length === 0) {
-      const adminCount = await User.countDocuments({ role: 'admin' });
-      if (adminCount === 0) {
-        await User.findOneAndUpdate(
-          { telegramId },
-          { role: 'admin' },
-          { upsert: true }
-        );
-        return true;
-      }
+    console.log('🔑 Initializing admin users...');
+    
+    for (const adminId of initialAdmins) {
+      await User.findOneAndUpdate(
+        { telegramId: adminId },
+        { 
+          role: 'admin',
+          telegramId: adminId 
+        },
+        { upsert: true }
+      );
+    }
+    
+    console.log(`✅ Initialized ${initialAdmins.length} admin(s)`);
+  } catch (error) {
+    console.error('❌ Error initializing admins:', error);
+  }
+};
+
+// Check if user is admin
+const isAdmin = async (msg) => {
+  try {
+    const telegramId = msg.chat?.id || msg.from?.id;
+    
+    console.log('🔍 Checking admin status for:', {
+      telegramId,
+      initialAdmins,
+      messageType: msg.chat ? 'chat' : 'callback'
+    });
+    
+    if (!telegramId) {
+      console.log('❌ No telegram ID found in message:', msg);
+      return false;
     }
 
-    const user = await User.findOne({ telegramId });
-    return user && (user.role === 'admin' || ADMIN_TELEGRAM_IDS.includes(telegramId));
+    // Check if user is in initial admins list
+    const stringId = telegramId.toString();
+    if (initialAdmins.includes(stringId)) {
+      console.log('✅ User found in initial admins list:', stringId);
+      // Ensure admin exists in database
+      await User.findOneAndUpdate(
+        { telegramId: stringId },
+        { role: 'admin' },
+        { upsert: true }
+      );
+      return true;
+    }
+
+    const user = await User.findOne({ 
+      telegramId: stringId,
+      role: 'admin'
+    });
+
+    console.log('🔎 Database admin check:', {
+      telegramId: stringId,
+      found: !!user,
+      role: user?.role
+    });
+
+    return !!user;
   } catch (error) {
     console.error('Error checking admin status:', error);
     return false;
   }
 };
 
-// Command to add new admin
-const addAdmin = async (msg) => {
-  const adminId = msg.from.id.toString();
-  const messageText = msg.text.split(' ');
-  
+// Add new admin
+const addAdmin = async (telegramId) => {
   try {
-    // Check if command sender is admin
-    const isUserAdmin = await isAdmin(msg);
-    if (!isUserAdmin) {
-      return 'You are not authorized to add admins.';
-    }
-
-    if (messageText.length !== 2) {
-      return 'Please provide a Telegram ID: /addadmin <telegram_id>';
-    }
-
-    const newAdminId = messageText[1];
-    await User.findOneAndUpdate(
-      { telegramId: newAdminId },
+    const result = await User.findOneAndUpdate(
+      { telegramId: telegramId.toString() },
       { role: 'admin' },
-      { upsert: true }
+      { upsert: true, new: true }
     );
-    return `Admin added successfully! ID: ${newAdminId}`;
+    return result;
   } catch (error) {
     console.error('Error adding admin:', error);
-    return 'Failed to add admin. Please try again.';
+    throw error;
   }
 };
 
-module.exports = { isAdmin, addAdmin }; 
+module.exports = { isAdmin, addAdmin, initializeAdmins }; 

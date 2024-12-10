@@ -2,46 +2,54 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const announcementController = require('./controllers/announcementController');
+const { initializeAdmins } = require('./middleware/adminAuth');
 
-const app = express();
-app.use(express.json());
+const startApp = async () => {
+  try {
+    // Connect to MongoDB
+    await mongoose.connect(process.env.MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true
+    });
+    console.log('📦 Connected to MongoDB');
 
-// Fix mongoose deprecation warning
-mongoose.set('strictQuery', false);
+    // Initialize admin users
+    await initializeAdmins();
 
-// Configure Telegram bot to handle promise cancellation
-process.env.NTBA_FIX_319 = 1;
+    // Initialize bot
+    require('./bot/telegramBot');
+    console.log('🤖 Bot initialized');
 
-// Connect to MongoDB with updated options and increased timeout
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 5000, // Timeout after 5 seconds
-  socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-  connectTimeoutMS: 10000, // Give up initial connection after 10 seconds
-}).then(() => {
-  console.log('📦 Connected to MongoDB');
-}).catch((err) => {
-  console.error('❌ MongoDB connection error:', err);
-  process.exit(1); // Exit if cannot connect to database
-});
+    // Start express server
+    const app = express();
+    app.use(express.json());
 
-// Make sure your .env has the correct MongoDB URI
-console.log('🔌 Attempting to connect to MongoDB...');
+    // Fix mongoose deprecation warning
+    mongoose.set('strictQuery', false);
 
-// Routes
-app.post('/api/announcements', announcementController.createAnnouncement);
+    // Configure Telegram bot to handle promise cancellation
+    process.env.NTBA_FIX_319 = 1;
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+    // Routes
+    app.post('/api/announcements', announcementController.createAnnouncement);
 
-// Handle uncaught errors
-process.on('unhandledRejection', (error) => {
-  console.error('Unhandled Rejection:', error);
-});
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
 
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-}); 
+    // Handle uncaught errors
+    process.on('unhandledRejection', (error) => {
+      console.error('Unhandled Rejection:', error);
+    });
+
+    process.on('uncaughtException', (error) => {
+      console.error('Uncaught Exception:', error);
+    });
+  } catch (error) {
+    console.error('❌ Error starting app:', error);
+    process.exit(1);
+  }
+};
+
+startApp(); 

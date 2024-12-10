@@ -66,8 +66,16 @@ bot.onText(/\/announce/, async (msg) => {
 });
 
 // Admin command to add another admin
-bot.onText(/\/addadmin (.+)/, async (msg) => {
+bot.onText(/\/addadmin/, async (msg) => {
   const chatId = msg.chat.id;
+  const user = await User.findOne({ telegramId: chatId.toString() });
+  const lang = user?.language || 'en';
+  
+  if (!await isAdmin(msg)) {
+    bot.sendMessage(chatId, getText(lang, 'not_authorized'));
+    return;
+  }
+
   const response = await addAdmin(msg);
   bot.sendMessage(chatId, response);
 });
@@ -124,65 +132,157 @@ bot.on('callback_query', async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
 
-  if (data.startsWith('start_lang_')) {
-    const language = data.split('_')[2];
-    try {
-      // Save user with selected language
+  try {
+    // Always answer callback query first to stop the loading state
+    await bot.answerCallbackQuery(callbackQuery.id);
+
+    if (data === 'open_dashboard') {
+      try {
+        // Verify admin status
+        if (!await isAdmin({ chat: { id: chatId } })) {
+          bot.sendMessage(chatId, getText(lang, 'not_authorized'));
+          return;
+        }
+
+        // Gather statistics
+        const totalUsers = await User.countDocuments();
+        const activeUsers = await User.countDocuments({ 
+          lastActive: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
+        });
+        const totalAdmins = await User.countDocuments({ role: 'admin' });
+        const totalAnnouncements = await Announcement.countDocuments();
+
+        // Create dashboard menu
+        const dashboardMessage = 
+          `📊 *Admin Dashboard*\n\n` +
+          `👥 Total Users: ${totalUsers}\n` +
+          `✅ Active Users (7d): ${activeUsers}\n` +
+          `👑 Total Admins: ${totalAdmins}\n` +
+          `📢 Total Announcements: ${totalAnnouncements}\n\n` +
+          `Select an option:`;
+
+        const keyboard = {
+          inline_keyboard: [
+            [
+              { text: '👥 Manage Admins', callback_data: 'dash_admins' },
+              { text: '📢 Manage Announcements', callback_data: 'dash_announcements' }
+            ],
+            [
+              { text: '📊 User Statistics', callback_data: 'dash_stats' },
+              { text: '🔔 Active Subscriptions', callback_data: 'dash_subs' }
+            ]
+          ]
+        };
+
+        await bot.sendMessage(chatId, dashboardMessage, {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard
+        });
+
+        // Log dashboard access
+        console.log('📊 Dashboard opened by admin:', chatId);
+      } catch (error) {
+        console.error('Dashboard error:', error);
+        bot.sendMessage(chatId, getText(lang, 'error_dashboard'));
+      }
+      return;
+    }
+
+    // Handle existing language selection callbacks
+    if (data.startsWith('start_lang_')) {
+      const language = data.split('_')[2];
+      try {
+        console.log('👤 Processing user:', chatId);
+        
+        // Save or update user first
+        const user = await User.findOneAndUpdate(
+          { telegramId: chatId.toString() },
+          { 
+            username: callbackQuery.from.username,
+            language: language 
+          },
+          { upsert: true, new: true }
+        );
+
+        // Check if user is admin
+        const adminCheck = await isAdmin({ chat: { id: chatId } });
+        console.log('👑 Admin check result:', { 
+          userId: chatId,
+          isAdmin: adminCheck,
+          userRole: user.role
+        });
+
+        // Send welcome message in selected language
+        await bot.sendMessage(chatId, getText(language, 'language_changed'));
+        await bot.sendMessage(chatId, getText(language, 'welcome'));
+
+        // Send role-specific commands
+        if (adminCheck) {
+          console.log('📨 Sending admin commands to:', chatId);
+          await bot.sendMessage(chatId, getText(language, 'admin_commands'), {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: getText(language, 'open_dashboard'), callback_data: 'open_dashboard' }]
+              ]
+            }
+          });
+        } else {
+          console.log('📨 Sending student commands to:', chatId);
+          await bot.sendMessage(chatId, getText(language, 'student_commands'));
+        }
+
+      } catch (error) {
+        console.error('Error in language selection:', error);
+        bot.sendMessage(chatId, '❌ Error setting language. Please try /start again.');
+      }
+      return;
+    }
+
+    if (data.startsWith('lang_')) {
+      const language = data.split('_')[1];
       await User.findOneAndUpdate(
         { telegramId: chatId.toString() },
-        { 
-          username: callbackQuery.from.username,
-          language: language 
-        },
+        { language: language },
         { upsert: true }
       );
 
-      // Send welcome message in selected language
-      await bot.sendMessage(chatId, getText(language, 'language_changed'));
-      await bot.sendMessage(chatId, getText(language, 'welcome'));
-      await bot.sendMessage(chatId, getText(language, 'commands'));
-
-    } catch (error) {
-      console.error('Error setting initial language:', error);
-      bot.sendMessage(chatId, '❌ Error setting language. Please try /start again.');
+      bot.sendMessage(chatId, getText(language, 'language_changed'));
+      return;
     }
-    return;
-  }
-
-  if (data.startsWith('lang_')) {
-    const language = data.split('_')[1];
-    await User.findOneAndUpdate(
-      { telegramId: chatId.toString() },
-      { language: language },
-      { upsert: true }
-    );
-
-    bot.sendMessage(chatId, getText(language, 'language_changed'));
-    return;
-  }
-  
-  const state = announcementStates.get(chatId);
-
-  if (!state) return;
-
-  if (data.startsWith('tag_')) {
-    state.tag = data.replace('tag_', '');
-    state.step = 'ATTACHMENTS';
     
-    bot.sendMessage(chatId, 
-      '📎 You can now send photos or documents (optional).\n' +
-      'Send your attachments one by one or click "Done" if you don\'t want to add any.',
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "Done ✅", callback_data: "attachments_done" }
-          ]]
+    const state = announcementStates.get(chatId);
+
+    if (!state) return;
+
+    if (data.startsWith('tag_')) {
+      state.tag = data.replace('tag_', '');
+      state.step = 'ATTACHMENTS';
+      
+      bot.sendMessage(chatId, 
+        '📎 You can now send photos or documents (optional).\n' +
+        'Send your attachments one by one or click "Done" if you don\'t want to add any.',
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "Done ✅", callback_data: "attachments_done" }
+            ]]
+          }
         }
-      }
-    );
-  } else if (data === 'attachments_done') {
-    await createAndSendAnnouncement(state, chatId);
-    announcementStates.delete(chatId);
+      );
+    } else if (data === 'attachments_done') {
+      await createAndSendAnnouncement(state, chatId);
+      announcementStates.delete(chatId);
+    }
+  } catch (error) {
+    console.error('Callback query error:', error);
+    // Still try to stop the loading state even if there's an error
+    try {
+      await bot.answerCallbackQuery(callbackQuery.id);
+    } catch (e) {
+      console.error('Error answering callback query:', e);
+    }
+    await bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
   }
 });
 
@@ -485,7 +585,7 @@ bot.onText(/\/dashboard/, async (msg) => {
   const chatId = msg.chat.id;
   const user = await User.findOne({ telegramId: chatId.toString() });
   const lang = user?.language || 'en';
-
+  
   if (!await isAdmin(msg)) {
     bot.sendMessage(chatId, getText(lang, 'not_authorized'));
     return;
@@ -563,14 +663,14 @@ async function handleAdminManagement(chatId) {
   let message = '👑 *Admin Management*\n\n';
   
   for (const admin of admins) {
-    message += `• ${admin.username || admin.telegramId} ` +
-      `[Remove](${makeRemoveAdminUrl(admin.telegramId)})\n`;
+    message += `• ${admin.username || admin.telegramId}\n`;
   }
 
   const keyboard = {
     inline_keyboard: [
       [{ text: '➕ Add New Admin', callback_data: 'admin_add' }],
-      [{ text: '🔙 Back to Dashboard', callback_data: 'dash_back' }]
+      [{ text: '❌ Remove Admin', callback_data: 'admin_remove' }],
+      [{ text: '🔙 Back to Dashboard', callback_data: 'open_dashboard' }]
     ]
   };
 
@@ -580,34 +680,308 @@ async function handleAdminManagement(chatId) {
   });
 }
 
-// Announcement Management Handler
-async function handleAnnouncementManagement(chatId) {
-  const recentAnnouncements = await Announcement.find()
-    .sort({ createdAt: -1 })
-    .limit(5);
+// Add these new handlers for admin actions
+bot.on('callback_query', async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
 
-  let message = '📢 *Recent Announcements*\n\n';
-  let keyboard = { inline_keyboard: [] };
+  try {
+    switch (data) {
+      case 'admin_add':
+        await bot.sendMessage(chatId, 
+          '👤 Please forward a message from the user you want to make admin\n' +
+          'or send their Telegram ID');
+        adminActionStates.set(chatId, { action: 'ADD_ADMIN' });
+        break;
 
-  for (const announcement of recentAnnouncements) {
-    message += `• ${announcement.title}\n`;
-    keyboard.inline_keyboard.push([
-      { 
-        text: `🗑️ Delete "${announcement.title.substring(0, 20)}..."`,
-        callback_data: `del_ann_${announcement._id}`
-      }
-    ]);
+      case 'admin_remove':
+        const admins = await User.find({ role: 'admin' });
+        const keyboard = {
+          inline_keyboard: admins.map(admin => ([{
+            text: `❌ ${admin.username || admin.telegramId}`,
+            callback_data: `remove_admin_${admin.telegramId}`
+          }]))
+        };
+        keyboard.inline_keyboard.push([
+          { text: '🔙 Back to Admin Management', callback_data: 'dash_admins' }
+        ]);
+
+        await bot.sendMessage(chatId, 
+          '❌ Select an admin to remove:',
+          { reply_markup: keyboard }
+        );
+        break;
+
+      case data.startsWith('remove_admin_') && data:
+        const adminId = data.replace('remove_admin_', '');
+        if (adminId === chatId.toString()) {
+          await bot.sendMessage(chatId, '❌ You cannot remove yourself as admin');
+          return;
+        }
+        await User.findOneAndUpdate(
+          { telegramId: adminId },
+          { role: 'student' }
+        );
+        await bot.sendMessage(chatId, '✅ Admin removed successfully');
+        await handleAdminManagement(chatId);
+        break;
+    }
+  } catch (error) {
+    console.error('Admin action error:', error);
+    bot.sendMessage(chatId, '❌ Error processing admin action');
   }
+});
 
-  keyboard.inline_keyboard.push([
-    { text: '🔙 Back to Dashboard', callback_data: 'dash_back' }
-  ]);
+// Store admin action states
+const adminActionStates = new Map();
 
-  bot.sendMessage(chatId, message, {
-    parse_mode: 'Markdown',
-    reply_markup: keyboard
-  });
+// Handle messages for admin actions
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const state = adminActionStates.get(chatId);
+
+  if (!state) return;
+
+  try {
+    if (state.action === 'ADD_ADMIN') {
+      let newAdminId;
+
+      if (msg.forward_from) {
+        newAdminId = msg.forward_from.id.toString();
+      } else if (msg.text && /^\d+$/.test(msg.text)) {
+        newAdminId = msg.text;
+      } else {
+        bot.sendMessage(chatId, 
+          '❌ Invalid input. Please forward a message from the user or send their Telegram ID');
+        return;
+      }
+
+      await User.findOneAndUpdate(
+        { telegramId: newAdminId },
+        { role: 'admin' },
+        { upsert: true }
+      );
+
+      await bot.sendMessage(chatId, '✅ New admin added successfully');
+      await handleAdminManagement(chatId);
+      adminActionStates.delete(chatId);
+    }
+  } catch (error) {
+    console.error('Error processing admin action message:', error);
+    bot.sendMessage(chatId, '❌ Error adding new admin');
+    adminActionStates.delete(chatId);
+  }
+});
+
+// Store pagination states
+const paginationStates = new Map();
+const ITEMS_PER_PAGE = 5;
+
+// Announcement Management Handler with pagination
+async function handleAnnouncementManagement(chatId, page = 1) {
+  try {
+    // Get total count for pagination
+    const totalAnnouncements = await Announcement.countDocuments();
+    const totalPages = Math.ceil(totalAnnouncements / ITEMS_PER_PAGE);
+    
+    // Get announcements for current page
+    const recentAnnouncements = await Announcement.find()
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * ITEMS_PER_PAGE)
+      .limit(ITEMS_PER_PAGE);
+
+    let message = '📢 *Recent Announcements*\n' +
+                 `Page ${page} of ${totalPages}\n` +
+                 `Total: ${totalAnnouncements} announcements\n\n`;
+
+    let keyboard = { inline_keyboard: [] };
+
+    // Add announcements with delete buttons
+    for (const announcement of recentAnnouncements) {
+      const safeTitle = announcement.title
+        .replace(/[*_`\[]/g, '\\$&')
+        .substring(0, 20);
+      
+      message += `• ${safeTitle}\n`;
+      keyboard.inline_keyboard.push([
+        { 
+          text: `🗑️ Delete "${safeTitle}..."`,
+          callback_data: `del_ann_${announcement._id}`
+        }
+      ]);
+    }
+
+    // Add pagination controls
+    let navigationRow = [];
+    
+    if (page > 1) {
+      navigationRow.push({
+        text: '⬅️ Previous',
+        callback_data: `ann_page_${page - 1}`
+      });
+    }
+    
+    if (page < totalPages) {
+      navigationRow.push({
+        text: 'Next ➡️',
+        callback_data: `ann_page_${page + 1}`
+      });
+    }
+
+    if (navigationRow.length > 0) {
+      keyboard.inline_keyboard.push(navigationRow);
+    }
+
+    // Add search and filter options
+    keyboard.inline_keyboard.push([
+      { text: '🔍 Search', callback_data: 'ann_search' },
+      { text: '📅 Filter by Date', callback_data: 'ann_filter_date' }
+    ]);
+
+    // Add back button
+    keyboard.inline_keyboard.push([
+      { text: '🔙 Back to Dashboard', callback_data: 'open_dashboard' }
+    ]);
+
+    await bot.sendMessage(chatId, message, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard
+    });
+
+    // Store current page in state
+    paginationStates.set(chatId, { currentPage: page });
+
+  } catch (error) {
+    console.error('Error in announcement management:', error);
+    await bot.sendMessage(chatId, '❌ Error loading announcements. Please try again.');
+  }
 }
+
+// Add to your callback query handler
+bot.on('callback_query', async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+
+  try {
+    await bot.answerCallbackQuery(callbackQuery.id);
+
+    if (data.startsWith('ann_page_')) {
+      const page = parseInt(data.split('_')[2]);
+      await handleAnnouncementManagement(chatId, page);
+    }
+    else if (data === 'ann_search') {
+      await bot.sendMessage(chatId, 
+        '🔍 Please enter your search term:\n' +
+        'Send any text to search announcements');
+      searchStates.set(chatId, { action: 'SEARCH_ANNOUNCEMENTS' });
+    }
+    else if (data === 'ann_filter_date') {
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: 'Last 24 hours', callback_data: 'ann_filter_24h' },
+            { text: 'Last Week', callback_data: 'ann_filter_7d' }
+          ],
+          [
+            { text: 'Last Month', callback_data: 'ann_filter_30d' },
+            { text: 'All Time', callback_data: 'ann_filter_all' }
+          ],
+          [{ text: '🔙 Back', callback_data: 'dash_announcements' }]
+        ]
+      };
+      await bot.sendMessage(chatId, 
+        '📅 Select time period:', 
+        { reply_markup: keyboard }
+      );
+    }
+    // ... rest of your callback handling ...
+  } catch (error) {
+    console.error('Callback query error:', error);
+    await bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
+  }
+});
+
+// Handle search functionality
+const searchStates = new Map();
+
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const searchState = searchStates.get(chatId);
+
+  if (searchState?.action === 'SEARCH_ANNOUNCEMENTS' && msg.text) {
+    try {
+      const searchResults = await Announcement.find({
+        $or: [
+          { title: { $regex: msg.text, $options: 'i' } },
+          { message: { $regex: msg.text, $options: 'i' } }
+        ]
+      })
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+      if (searchResults.length === 0) {
+        await bot.sendMessage(chatId, '❌ No announcements found matching your search.');
+      } else {
+        let message = '🔍 *Search Results*\n\n';
+        let keyboard = { inline_keyboard: [] };
+
+        for (const announcement of searchResults) {
+          const safeTitle = announcement.title
+            .replace(/[*_`\[]/g, '\\$&')
+            .substring(0, 20);
+          
+          message += `• ${safeTitle}\n`;
+          keyboard.inline_keyboard.push([
+            { 
+              text: `🗑️ Delete "${safeTitle}..."`,
+              callback_data: `del_ann_${announcement._id}`
+            }
+          ]);
+        }
+
+        keyboard.inline_keyboard.push([
+          { text: '🔙 Back to Announcements', callback_data: 'dash_announcements' }
+        ]);
+
+        await bot.sendMessage(chatId, message, {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard
+        });
+      }
+    } catch (error) {
+      console.error('Search error:', error);
+      await bot.sendMessage(chatId, '❌ Error performing search. Please try again.');
+    }
+    
+    searchStates.delete(chatId);
+  }
+});
+
+// Add handler for announcement deletion
+bot.on('callback_query', async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+
+  if (data.startsWith('del_ann_')) {
+    try {
+      const announcementId = data.replace('del_ann_', '');
+      
+      // Delete the announcement
+      await Announcement.findByIdAndDelete(announcementId);
+      
+      // Show confirmation
+      await bot.sendMessage(chatId, '✅ Announcement deleted successfully');
+      
+      // Refresh the announcements list
+      await handleAnnouncementManagement(chatId);
+      
+      console.log('🗑️ Announcement deleted:', announcementId);
+    } catch (error) {
+      console.error('Error deleting announcement:', error);
+      await bot.sendMessage(chatId, '❌ Error deleting announcement. Please try again.');
+    }
+  }
+});
 
 // User Statistics Handler
 async function handleUserStatistics(chatId) {

@@ -46,5 +46,8 @@
   "user_stats": "📊 Statistiques",
   "active_subs": "🔔 Abonnements Actifs",
   "last_active": "Dernière activité",
-  "language_distribution": "Distribution des Langues"
+  "language_distribution": "Distribution des Langues",
+  "admin_commands": "📌 *Commandes Admin:*\n• /myid - Obtenir votre ID Telegram\n• /getannouncements - Voir les 5 dernières annonces\n• /announce - Créer une nouvelle annonce\n• /addadmin - Ajouter un nouvel admin\n• /dashboard - Accéder au tableau de bord\n• /lang - Changer de langue",
+  "student_commands": "📌 Commandes Disponibles:\n• /myid - Obtenir votre ID Telegram\n• /getannouncements - Voir les 5 dernières annonces\n• /lang - Changer de langue",
+  "open_dashboard": "🎛️ Ouvrir le Tableau de Bord"
 } 
